@@ -96,17 +96,11 @@ def convert_asis(userinput):
 
 
 def detect_converted_mark(userinput):
-    if userinput.endswith(ALREADY_CONVERTED_MARK):
-        return True
-    else:
-        return False
+    return bool(userinput.endswith(ALREADY_CONVERTED_MARK))
 
 
 def detect_language(code):
-    if code.startswith("\n"):
-        first_line = ""
-    else:
-        first_line = code.strip().split("\n", 1)[0]
+    first_line = "" if code.startswith("\n") else code.strip().split("\n", 1)[0]
     language = first_line.lower() if first_line else ""
     code_without_language = code[len(first_line) :].lstrip() if first_line else code
     return language, code_without_language
@@ -162,10 +156,7 @@ def add_language_tag(text):
         code_block = match.group(2)
         if match.group(2).startswith("\n"):
             language = detect_language(code_block)
-            if language:
-                return f"```{language}{code_block}```"
-            else:
-                return f"```\n{code_block}```"
+            return f"```{language}{code_block}```" if language else f"```\n{code_block}```"
         else:
             return match.group(1) + code_block + "```"
 

@@ -80,10 +80,8 @@ class BaseModelAdapter:
         model_kwargs = self.model_kwargs
         if use_ptuning_v2 and adapter_model:
             config = AutoConfig.from_pretrained(model_name_or_path, **model_kwargs)
-            prefix_encoder_file = open(f'{adapter_model}/config.json', 'r')
-            prefix_encoder_config = json.loads(prefix_encoder_file.read())
-            prefix_encoder_file.close()
-
+            with open(f'{adapter_model}/config.json', 'r') as prefix_encoder_file:
+                prefix_encoder_config = json.loads(prefix_encoder_file.read())
             config.pre_seq_len = prefix_encoder_config['pre_seq_len']
             config.prefix_projection = prefix_encoder_config['prefix_projection']
             model_kwargs["config"] = config
@@ -97,7 +95,7 @@ class BaseModelAdapter:
                 # model_kwargs["device_map"] = "sequential"  # This is important for not the same VRAM sizes
                 available_gpu_memory = get_gpu_memory(num_gpus)
                 model_kwargs["max_memory"] = {
-                    i: str(int(available_gpu_memory[i] * 0.85)) + "GiB"
+                    i: f"{int(available_gpu_memory[i] * 0.85)}GiB"
                     for i in range(num_gpus)
                 }
 
@@ -169,10 +167,11 @@ class BaseModelAdapter:
 
         if use_ptuning_v2:
             prefix_state_dict = torch.load(os.path.join(adapter_model, "pytorch_model.bin"))
-            new_prefix_state_dict = {}
-            for k, v in prefix_state_dict.items():
-                if k.startswith("transformer.prefix_encoder."):
-                    new_prefix_state_dict[k[len("transformer.prefix_encoder."):]] = v
+            new_prefix_state_dict = {
+                k[len("transformer.prefix_encoder.") :]: v
+                for k, v in prefix_state_dict.items()
+                if k.startswith("transformer.prefix_encoder.")
+            }
             model.transformer.prefix_encoder.load_state_dict(new_prefix_state_dict)
             model.transformer.prefix_encoder.float()
         else:

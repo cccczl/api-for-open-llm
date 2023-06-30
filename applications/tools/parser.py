@@ -83,8 +83,7 @@ def get_column_cropped_pages(pages, two_column=True):
         if two_column:
             left = page.within_bbox((0, 0, page.width / 2, page.height), relative=True)
             right = page.within_bbox((page.width / 2, 0, page.width, page.height), relative=True)
-            new_pages.append(left)
-            new_pages.append(right)
+            new_pages.extend((left, right))
         else:
             new_pages.append(page)
 
