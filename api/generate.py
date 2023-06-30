@@ -41,12 +41,15 @@ def chatglm_stream_token_num(tokenizer, query: str, history: List[Tuple[str, str
     if not history:
         prompt = query
     else:
-        prompt = ""
-        for i, (old_query, response) in enumerate(history):
-            prompt += "[Round {}]\n问：{}\n答：{}\n".format(i, old_query, response)
-        prompt += "[Round {}]\n问：{}\n答：".format(len(history), query)
+        prompt = (
+            "".join(
+                f"[Round {i}]\n问：{old_query}\n答：{response}\n"
+                for i, (old_query, response) in enumerate(history)
+            )
+            + f"[Round {len(history)}]\n问：{query}\n答："
+        )
     inputs = tokenizer([prompt])
-    return sum([len(x) for x in inputs["input_ids"]])
+    return sum(len(x) for x in inputs["input_ids"])
 
 
 @torch.inference_mode()
@@ -60,7 +63,7 @@ def chatglm_generate_stream(model, tokenizer, params, device, context_len=2048, 
 
     gen_kwargs = {
         "max_length": context_len,
-        "do_sample": True if temperature > 1e-5 else False,
+        "do_sample": temperature > 1e-5,
         "top_p": top_p,
         "repetition_penalty": repetition_penalty,
         "logits_processor": None,
@@ -95,11 +98,7 @@ def chatglm_generate_stream(model, tokenizer, params, device, context_len=2048, 
     for i, (response, new_hist) in enumerate(
         model.stream_chat(tokenizer, query, history, **gen_kwargs)
     ):
-        if echo:
-            output = query + " " + response
-        else:
-            output = response
-
+        output = f"{query} {response}" if echo else response
         yield {
             "text": output,
             "usage": {
@@ -110,9 +109,7 @@ def chatglm_generate_stream(model, tokenizer, params, device, context_len=2048, 
             "finish_reason": None,
         }
 
-    # TODO: ChatGLM stop when it reach max length
-    # Only last stream result contains finish_reason, we set finish_reason as stop
-    ret = {
+    yield {
         "text": output,
         "usage": {
             "prompt_tokens": input_echo_len,
@@ -121,8 +118,6 @@ def chatglm_generate_stream(model, tokenizer, params, device, context_len=2048, 
         },
         "finish_reason": "stop",
     }
-    yield ret
-
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -181,26 +176,23 @@ def generate_stream(
             else:
                 out = model(torch.as_tensor([input_ids], device=device), use_cache=True)
                 logits = out.logits
-            past_key_values = out.past_key_values
+        elif model.config.is_encoder_decoder:
+            out = model.decoder(
+                input_ids=torch.as_tensor([[token]], device=device),
+                encoder_hidden_states=encoder_output,
+                use_cache=True,
+                past_key_values=past_key_values,
+            )
+
+            logits = model.lm_head(out[0])
         else:
-            if model.config.is_encoder_decoder:
-                out = model.decoder(
-                    input_ids=torch.as_tensor([[token]], device=device),
-                    encoder_hidden_states=encoder_output,
-                    use_cache=True,
-                    past_key_values=past_key_values,
-                )
-
-                logits = model.lm_head(out[0])
-            else:
-                out = model(
-                    input_ids=torch.as_tensor([[token]], device=device),
-                    use_cache=True,
-                    past_key_values=past_key_values,
-                )
-                logits = out.logits
-            past_key_values = out.past_key_values
-
+            out = model(
+                input_ids=torch.as_tensor([[token]], device=device),
+                use_cache=True,
+                past_key_values=past_key_values,
+            )
+            logits = out.logits
+        past_key_values = out.past_key_values
         if logits_processor:
             if repetition_penalty > 1.0:
                 tmp_output_ids = torch.as_tensor([output_ids], device=logits.device)
@@ -222,11 +214,7 @@ def generate_stream(
 
         output_ids.append(token)
 
-        if token in stop_token_ids:
-            stopped = True
-        else:
-            stopped = False
-
+        stopped = token in stop_token_ids
         if i % stream_interval == 0 or i == max_new_tokens - 1 or stopped:
             if echo:
                 tmp_output_ids = output_ids
@@ -333,11 +321,10 @@ class ModelServer:
         input_ids = self.tokenizer(prompt).input_ids
         input_echo_len = len(input_ids)
 
-        ret = {
+        return {
             "count": input_echo_len,
             "error_code": 0,
         }
-        return ret
 
     def generate_prompt(self, messages):
         return messages if self.is_chatglm else self.prompt_adapter.generate_prompt(messages)
@@ -368,18 +355,15 @@ class ModelServer:
                 yield ret
 
         except torch.cuda.OutOfMemoryError as e:
-            ret = {
+            yield {
                 "text": f"{server_error_msg}\n\n({e})",
                 "error_code": ErrorCode.CUDA_OUT_OF_MEMORY,
             }
-            yield ret
-
         except (ValueError, RuntimeError) as e:
-            ret = {
+            yield {
                 "text": f"{server_error_msg}\n\n({e})",
                 "error_code": ErrorCode.INTERNAL_ERROR,
             }
-            yield ret
 
     def generate_gate(self, params):
         if isinstance(params["prompt"], list):
@@ -422,8 +406,6 @@ class ModelServer:
         try:
             tokenizer = self.tokenizer
             is_llama = "llama" in str(type(self.model))  # vicuna support batch inference
-            is_chatglm = self.is_chatglm
-            is_t5 = "t5" in str(type(self.model))
             if is_llama:
                 encoding = tokenizer.batch_encode_plus(
                     params["input"], padding=True, return_tensors="pt"
@@ -447,6 +429,8 @@ class ModelServer:
             else:
                 embedding = []
                 token_num = 0
+                is_chatglm = self.is_chatglm
+                is_t5 = "t5" in str(type(self.model))
                 for text in params["input"]:
                     input_ids = tokenizer.encode(text, return_tensors="pt").to(
                         self.device
@@ -486,7 +470,7 @@ class ModelServer:
             embeddings = client.encode(params["input"], normalize_embeddings=True)
             ret = {
                 "embedding": embeddings.tolist(),
-                "token_num": sum([len(i) for i in params["input"]]),
+                "token_num": sum(len(i) for i in params["input"]),
             }
         except torch.cuda.OutOfMemoryError as e:
             ret = {

@@ -79,15 +79,13 @@ def check_requests(request) -> Optional[JSONResponse]:
             ErrorCode.PARAM_OUT_OF_RANGE,
             f"{request.top_p} is greater than the maximum of 1 - 'temperature'",
         )
-    if request.stop is not None and (
-        not isinstance(request.stop, str) and not isinstance(request.stop, list)
-    ):
+    if request.stop is None or isinstance(request.stop, (str, list)):
+        return None
+    else:
         return create_error_response(
             ErrorCode.PARAM_OUT_OF_RANGE,
             f"{request.stop} is not valid under any of the given schemas - 'stop'",
         )
-
-    return None
 
 
 def get_gen_params(
@@ -239,10 +237,11 @@ async def generate_completion_stream_generator(request: CompletionRequest):
 
 @app.get("/v1/models")
 async def show_available_models():
-    model_cards = []
     model_list = [args.model_name]
-    for m in model_list:
-        model_cards.append(ModelCard(id=m, root=m, permission=[ModelPermission()]))
+    model_cards = [
+        ModelCard(id=m, root=m, permission=[ModelPermission()])
+        for m in model_list
+    ]
     return ModelList(data=model_cards)
 
 
@@ -317,7 +316,7 @@ async def create_completion(request: CompletionRequest):
                 stream=request.stream,
                 stop=request.stop,
             )
-            for i in range(request.n):
+            for _ in range(request.n):
                 content = model_server.generate_gate(gen_params)
                 text_completions.append(content)
 

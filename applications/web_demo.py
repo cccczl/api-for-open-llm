@@ -59,9 +59,7 @@ def set_openai_env(api_base):
 
 def get_file_list():
     """ 获取文件列表 """
-    if not os.path.exists("doc_store"):
-        return []
-    return os.listdir("doc_store")
+    return [] if not os.path.exists("doc_store") else os.listdir("doc_store")
 
 
 file_list = get_file_list()
@@ -132,8 +130,7 @@ def get_table_names(select_database, databases):
 def get_sql_result(x, con):
     q = r"sql\n(.+?);\n"
     sql = re.findall(q, x, re.DOTALL)[0] + ";"
-    df = pd.read_sql(sql, con=con).iloc[:50, :]
-    return df
+    return pd.read_sql(sql, con=con).iloc[:50, :]
 
 
 @on_exception(expo, openai.error.RateLimitError, max_tries=5)
@@ -174,9 +171,11 @@ def predict(
         temperature = 0.0
         db_config = databases[select_database]
         con = create_engine(f"mysql+pymysql://{db_config['user']}:{db_config['password']}@{db_config['host']}:{db_config['port']}/{select_database}")
-        table_schema = ""
-        for t in select_table:
-            table_schema += pd.read_sql(f"show create table {t};", con=con)["Create Table"][0] + "\n\n"
+        table_schema = "".join(
+            pd.read_sql(f"show create table {t};", con=con)["Create Table"][0]
+            + "\n\n"
+            for t in select_table
+        )
         table_schema = table_schema.replace("DEFAULT NULL", "")
         messages.append(
             {
@@ -184,21 +183,20 @@ def predict(
                 "content": f"你现在是一名SQL助手，能够根据用户的问题生成准确的SQL查询。已知SQL的建表语句为：{table_schema}根据上述数据库信息，回答相关问题。"
             },
         )
-    else:
-        if not single_turn:
-            for h in history[-memory_k:]:
-                messages.extend(
-                    [
-                        {
-                            "role": "user",
-                            "content": h[0]
-                        },
-                        {
-                            "role": "assistant",
-                            "content": h[1]
-                        }
-                    ]
-                )
+    elif not single_turn:
+        for h in history[-memory_k:]:
+            messages.extend(
+                [
+                    {
+                        "role": "user",
+                        "content": h[0]
+                    },
+                    {
+                        "role": "assistant",
+                        "content": h[1]
+                    }
+                ]
+            )
 
     messages.append(
         {
@@ -270,7 +268,7 @@ def retry(
         return
     chatbot.pop()
     inputs = history.pop()[0]
-    for x in predict(
+    yield from predict(
         model_name,
         models,
         inputs,
@@ -286,8 +284,7 @@ def retry(
         select_database,
         select_table,
         databases,
-    ):
-        yield x
+    )
 
 
 gr.Chatbot.postprocess = postprocess
